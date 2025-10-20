@@ -1,0 +1,43 @@
+{
+  "name": "balance-utils-redis",
+  "version": "1.0.0",
+  "description": "A Redis-based balance checking and debiting utility for Node.js applications",
+  "main": "dist/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "npm run build:commonjs && npm run build:esm",
+    "build:commonjs": "tsc",
+    "build:esm": "tsc --module es2015 --outDir dist/esm",
+    "prepublishOnly": "npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "redis",
+    "balance",
+    "debit",
+    "finance",
+    "utility",
+    "typescript"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/balance-utils-redis.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/balance-utils-redis/issues"
+  },
+  "homepage": "https://github.com/your-username/balance-utils-redis#readme",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "package.json"
+  ]
+}
