@@ -1,6 +1,6 @@
 # Balance Utils Redis
 
-A Redis-based balance checking and debiting utility for Node.js applications. This package allows you to easily check and debit balances stored in Redis with a single function call using dependency injection for clean architecture.
+A Redis-based balance checking and debiting utility for Node.js applications with automatic pricing resolution. This package allows you to easily check and debit balances stored in Redis based on business context and service types with a single function call using dependency injection for clean architecture.
 
 ## Installation
 
@@ -10,9 +10,9 @@ npm install balance-utils-redis
 
 ## Prerequisites
 
-You need to have a Redis client connected to your Redis server. This package supports most Redis clients that have `.get()` and `.set()` methods, such as:
-- [ioredis](https://github.com/luin/ioredis)
-- [redis](https://github.com/redis/node-redis) (Node Redis)
+You need to have:
+- A Redis client connected to your Redis server (supports most Redis clients with `.get()` and `.set()` methods)
+- A database connection for fetching business details (MongoDB/Mongoose, etc.)
 
 ## Usage
 
@@ -20,6 +20,7 @@ You need to have a Redis client connected to your Redis server. This package sup
 ```typescript
 import { BalanceUtils } from 'balance-utils-redis';
 import Redis from 'ioredis';
+import mongoose from 'mongoose'; // or your preferred DB connection
 
 // Create Redis client instance
 const redisClient = new Redis({
@@ -27,16 +28,13 @@ const redisClient = new Redis({
   port: 6379,
 });
 
-// Initialize BalanceUtils with dependency injection
-const balanceService = new BalanceUtils(redisClient);
-// Or with database connection for fallback: new BalanceUtils(redisClient, dbConnection);
+// Initialize BalanceUtils with both Redis and Database connections
+const balanceService = new BalanceUtils(redisClient, mongoose.connection);
 
-// Check and debit balance
-const balanceKey = 'wallet:user123:ngn';
+// Check and debit balance based on business context and service type
 const result = await balanceService.checkAndDebitBalance(
-  balanceKey,
-  40, // amount to debit
-  'Identity verification charge' // operation description (optional, defaults to 'Verification')
+  'business123',              // businessId
+  'identity bvn verification' // action/service type
 );
 
 if (result.success) {
@@ -57,15 +55,13 @@ const redisClient = new Redis({
   port: 6379,
 });
 
-// Initialize BalanceUtils with dependency injection
-const balanceService = new BalanceUtils(redisClient);
+// Initialize BalanceUtils with both Redis and Database connections
+const balanceService = new BalanceUtils(redisClient, dbConnection);
 
-// Check and debit balance
-const balanceKey = 'wallet:user123:ngn';
+// Check and debit balance based on business context and service type
 balanceService.checkAndDebitBalance(
-  balanceKey,
-  40,
-  'Identity verification charge'
+  'business123',              // businessId
+  'identity bvn verification' // action/service type
 ).then(result => {
   if (result.success) {
     console.log('Balance debited successfully. New balance:', result.newBalance);
@@ -86,15 +82,13 @@ const redisClient = new Redis({
   port: 6379,
 });
 
-// Initialize BalanceUtils with dependency injection
-const balanceService = new BalanceUtils(redisClient);
+// Initialize BalanceUtils with both Redis and Database connections
+const balanceService = new BalanceUtils(redisClient, dbConnection);
 
-// Check and debit balance
-const balanceKey = 'wallet:user123:ngn';
+// Check and debit balance based on business context and service type
 const result = await balanceService.checkAndDebitBalance(
-  balanceKey,
-  40,
-  'Identity verification charge'
+  'business123',              // businessId
+  'identity bvn verification' // action/service type
 );
 
 if (result.success) {
@@ -106,24 +100,23 @@ if (result.success) {
 
 ## API
 
-### Constructor: `new BalanceUtils(redisClient, dbConnection?)`
+### Constructor: `new BalanceUtils(redisClient, dbConnection)`
 
 Initializes the BalanceUtils instance with dependency injection.
 
 #### Parameters
 
-- `redisClient`: Redis client instance with `.get()` and `.set()` methods
-- `dbConnection` (optional): Database connection for fallback operations
+- `redisClient`: Redis client instance with .get() and .set() methods
+- `dbConnection`: Database connection for fetching business details (MongoDB/Mongoose, Prisma, etc.)
 
-### Instance Method: `balanceService.checkAndDebitBalance(balanceKey, amount, operationDescription)`
+### Instance Method: `balanceService.checkAndDebitBalance(businessId, action)`
 
-Checks if the balance at `balanceKey` is sufficient and debits the specified `amount` if possible.
+Checks if the balance for the business is sufficient and debits the appropriate amount based on the service type and business context.
 
 #### Parameters
 
-- `balanceKey` (string): The Redis key for the balance
-- `amount` (number): The amount to debit (default: 1)
-- `operationDescription` (string): Description of the operation for logging (default: 'Verification')
+- `businessId` (string): The business ID to identify the user and fetch country/custom pricing
+- `action` (string): The service action (e.g., 'identity bvn verification')
 
 #### Returns
 
@@ -134,15 +127,22 @@ Promise resolving to an object with the following properties:
 - `oldBalance` (number, optional): The previous balance before deduction (present if success is true)
 - `amount` (number, optional): The amount debited (present if success is true)
 - `operation` (string): Operation description
+- `balanceKey` (string): The Redis key that was used for the operation
 - `error` (string, optional): Error message if the operation failed
 - `required` (number, optional): Amount required (present if insufficient balance)
 - `available` (number, optional): Available balance (present if insufficient balance)
 - `redisError` (string, optional): Redis error message if Redis operation failed
+- `serviceInfo` (object, optional): Information about the service pricing
 
-### Instance Methods for Dependency Management
+### How Pricing Resolution Works
 
-- `setRedisClient(redisClient)`: Update the Redis client instance
-- `setDbConnection(dbConnection)`: Update the database connection
+The package automatically:
+1. Fetches business details using the database connection
+2. Determines the appropriate currency based on business country vs. service country
+3. Looks up the correct price from the pricing lists (nairaPriceList, kePriceList, usdPriceList)
+4. Checks for custom business pricing overrides
+5. Builds the balance key internally as `wallet:${businessId}:${currency}`
+6. Processes the balance check and debit operation
 
 ## Contributing
 
