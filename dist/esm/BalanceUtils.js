@@ -109,34 +109,27 @@ export class BalanceUtils {
                 console.error('Database connection/model is required');
                 return null;
             }
-            if (this.dbConnection.constructor && this.dbConnection.constructor.name === 'Connection') {
-                const BusinessModel = this.dbConnection.base.models.Business ||
-                    this.dbConnection.model('Business');
-                return await BusinessModel.findById(businessId).lean();
+            if (typeof this.dbConnection === 'function' &&
+                this.dbConnection.findById &&
+                this.dbConnection.findOne) {
+                return await this.dbConnection.findById(businessId).lean();
+            }
+            else if (this.dbConnection.findById && this.dbConnection.findOne) {
+                return await this.dbConnection.findById(businessId).lean();
             }
             else if (this.dbConnection.model && typeof this.dbConnection.model === 'function') {
                 const BusinessModel = this.dbConnection.model('Business');
                 return await BusinessModel.findById(businessId).lean();
             }
-            else if (this.dbConnection.findById && this.dbConnection.findOne) {
-                return await this.dbConnection.findById(businessId).lean();
-            }
             else if (this.dbConnection.collection) {
                 const collection = this.dbConnection.collection('businesses');
                 return await collection.findOne({ _id: businessId });
             }
+            else if (typeof this.dbConnection === 'function') {
+                return await this.dbConnection('businesses').where('_id', businessId).first();
+            }
             else if (this.dbConnection.findOne) {
                 return await this.dbConnection.findOne({ _id: businessId });
-            }
-            else if (typeof this.dbConnection === 'function') {
-                try {
-                    if (this.dbConnection.findById && this.dbConnection.findOne) {
-                        return await this.dbConnection.findById(businessId).lean();
-                    }
-                }
-                catch (e) {
-                    return await this.dbConnection('businesses').where('_id', businessId).first();
-                }
             }
             console.error('Unsupported database connection type');
             return null;
