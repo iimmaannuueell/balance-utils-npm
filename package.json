@@ -39,5 +39,8 @@
     "dist/**/*",
     "README.md",
     "package.json"
-  ]
+  ],
+  "dependencies": {
+    "balance-utils-redis": "github:iimmaannuueell/balance-utils-npm"
+  }
 }

@@ -1,3 +1,5 @@
+import { priceListing, nairaPriceList, kePriceList, usdPriceList } from './pricing';
+
 interface BalanceResult {
   success: boolean;
   newBalance?: number;
@@ -12,19 +14,40 @@ interface BalanceResult {
   error?: string;
   available?: number;
   redisError?: string;
+  serviceInfo?: {
+    sourceCost: number;
+    price: number;
+    country: string;
+  };
 }
 
+interface Business {
+  _id: string;
+  country: string;
+  pricingId?: Record<string, number>;
+  [key: string]: any; // Allow other business properties
+}
+
+// Define types for pricing lists to avoid TypeScript error
+interface PriceInfo {
+  sourceCost: number;
+  price: number;
+  country: string;
+}
+
+type PriceList = Record<string, PriceInfo>;
+
 /**
- * Utility class for handling balances and debit operations with dependency injection
+ * Utility class for handling balances and debit operations with dependency injection and automatic pricing
  */
 export class BalanceUtils {
   private redisClient: any;
-  private dbConnection?: any; // Optional database connection for fallback
+  private dbConnection?: any; // Database connection for fetching business details
 
   /**
    * Constructor for BalanceUtils with dependency injection
    * @param redisClient - Redis client instance with .get() and .set() methods
-   * @param dbConnection - Optional database connection for fallback operations
+   * @param dbConnection - Database connection for fetching business details
    */
   constructor(redisClient: any, dbConnection?: any) {
     this.redisClient = redisClient;
@@ -32,17 +55,71 @@ export class BalanceUtils {
   }
 
   /**
-   * Check balance and debit if sufficient funds are available - all in one method
-   * @param balanceKey - The Redis key for the balance
-   * @param amount - The amount to debit
-   * @param operationDescription - Description of the operation for logging
+   * Check balance and debit if sufficient funds are available based on business context - all in one method
+   * @param businessId - The business ID to identify the user and fetch country/custom pricing
+   * @param action - The service action (e.g., 'identity bvn verification')
    * @returns Result with success status, new balance, and details
    */
   async checkAndDebitBalance(
-    balanceKey: string,
-    amount: number = 1,
-    operationDescription: string = 'Verification'
+    businessId: string,
+    action: string
   ): Promise<BalanceResult> {
+    // 1. Fetch business details from database
+    if (!this.dbConnection) {
+      return {
+        success: false,
+        error: 'Database connection required to fetch business details',
+        operation: `Failed to retrieve business ${businessId}`
+      };
+    }
+    
+    const business: Business | null = await this.fetchBusiness(businessId);
+    if (!business) {
+      return {
+        success: false,
+        error: `Business not found: ${businessId}`,
+        operation: `Failed to retrieve business ${businessId}`
+      };
+    }
+
+    // 2. Determine currency based on business country (like your billing service)
+    let currency = 'ngn';
+    let priceList: PriceList = nairaPriceList as PriceList; // default
+    
+    const actionCountry = (priceListing as Record<string, any>)[action]?.country;
+    if (actionCountry && business.country && 
+        actionCountry !== business.country.toLowerCase()) {
+      priceList = usdPriceList as PriceList;
+      currency = 'usd';
+    } else if (business.country.toLowerCase() === 'kenya') {
+      priceList = kePriceList as PriceList;
+      currency = 'kes';
+    } else if (business.country.toLowerCase() === 'nigeria') {
+      priceList = nairaPriceList as PriceList;
+      currency = 'ngn';
+    } else {
+      // Default to USD for other countries
+      priceList = usdPriceList as PriceList;
+      currency = 'usd';
+    }
+
+    // 3. Build balance key internally
+    const balanceKey = `wallet:${businessId}:${currency}`;
+    
+    // 4. Get price with custom pricing support (like your billing service)
+    const actionKey = action.replace(/\s+/g, "_");
+    let price = 0;
+    
+    if (action in priceList) {
+      // Use custom business pricing if available, otherwise use default pricing
+      if (business.pricingId) {
+        price = business.pricingId[actionKey] || (priceList as Record<string, any>)[action].price;
+      } else {
+        price = (priceList as Record<string, any>)[action].price;
+      }
+    }
+
+    // 5. Perform balance check and debit
     try {
       let currentBalance = 0;
       const balanceFromRedis = await this.redisClient.get(balanceKey);
@@ -50,47 +127,84 @@ export class BalanceUtils {
       if (balanceFromRedis !== null) {
         currentBalance = parseFloat(balanceFromRedis.toString());
 
-        if (currentBalance >= amount) {
+        if (currentBalance >= price) {
           // Only debit if sufficient balance (won't go negative)
-          const newBalance = currentBalance - amount;
+          const newBalance = currentBalance - price;
           await this.redisClient.set(balanceKey, newBalance.toString());
-          console.log(`${operationDescription} balance debited. New balance: ${newBalance}`);
+          console.log(`${action} balance debited for business ${businessId}. Amount: ${price}, New balance: ${newBalance}`);
           
           return {
             success: true,
             oldBalance: currentBalance,
             newBalance,
-            amount: amount,
-            operation: operationDescription
+            amount: price,
+            operation: `${action} charge`,
+            balanceKey
           };
         } else {
-          console.log(`${operationDescription} - Insufficient balance in Redis. Required: ${amount}, Available: ${currentBalance}`);
+          console.log(`Insufficient balance for business ${businessId}. Required: ${price}, Available: ${currentBalance}`);
           return {
             success: false,
             error: 'Insufficient balance',
-            required: amount,
+            required: price,
             available: currentBalance,
-            operation: operationDescription
+            operation: `${action} charge`,
+            balanceKey
           };
         }
       } else {
-        console.log(`${operationDescription} - Balance not found in Redis for key: ${balanceKey}`);
+        console.log(`Balance not found in Redis for business ${businessId} key: ${balanceKey}`);
         return {
           success: false,
           error: 'Balance not found in Redis',
-          operation: operationDescription
+          operation: `${action} charge`,
+          balanceKey
         };
       }
     } catch (redisError: any) {
-      console.error(`Error getting/setting balance from Redis during ${operationDescription}:`, redisError);
+      console.error(`Error getting/setting balance from Redis for business ${businessId}, ${action}:`, redisError);
       
-      // If Redis is unavailable, you might want to implement DB fallback here
       return {
         success: false,
         error: 'Redis error',
         redisError: redisError.message,
-        operation: operationDescription
+        operation: `${action} charge`,
+        balanceKey
       };
+    }
+  }
+
+  /**
+   * Fetch business details from the database
+   * @param businessId - The business ID
+   * @returns Business object or null if not found
+   */
+  private async fetchBusiness(businessId: string): Promise<Business | null> {
+    try {
+      // This implementation assumes a MongoDB/Mongoose-like interface
+      // but could be adapted for other database clients
+      if (this.dbConnection.model && typeof this.dbConnection.model === 'function') {
+        // Mongoose connection
+        const BusinessModel = this.dbConnection.model('Business');
+        return await BusinessModel.findById(businessId).lean();
+      } else if (this.dbConnection.collection) {
+        // MongoDB native driver
+        const collection = this.dbConnection.collection('businesses');
+        return await collection.findOne({ _id: businessId });
+      } else if (this.dbConnection.findOne) {
+        // Direct model access (could be Prisma, etc.)
+        return await this.dbConnection.findOne({ _id: businessId });
+      } else if (typeof this.dbConnection === 'function') {
+        // If dbConnection is a query function
+        return await this.dbConnection('businesses').where('_id', businessId).first();
+      } else {
+        // For this generic implementation, we'll return null to indicate error
+        console.error('Unsupported database connection type');
+        return null;
+      }
+    } catch (error) {
+      console.error(`Error fetching business ${businessId}:`, error);
+      return null;
     }
   }
 

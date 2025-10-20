@@ -12,12 +12,18 @@ interface BalanceResult {
     error?: string;
     available?: number;
     redisError?: string;
+    serviceInfo?: {
+        sourceCost: number;
+        price: number;
+        country: string;
+    };
 }
 export declare class BalanceUtils {
     private redisClient;
     private dbConnection?;
     constructor(redisClient: any, dbConnection?: any);
-    checkAndDebitBalance(balanceKey: string, amount?: number, operationDescription?: string): Promise<BalanceResult>;
+    checkAndDebitBalance(businessId: string, action: string): Promise<BalanceResult>;
+    private fetchBusiness;
     setRedisClient(redisClient: any): void;
     setDbConnection(dbConnection: any): void;
 }
