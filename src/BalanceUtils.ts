@@ -181,27 +181,55 @@ export class BalanceUtils {
    */
   private async fetchBusiness(businessId: string): Promise<Business | null> {
     try {
-      // This implementation assumes a MongoDB/Mongoose-like interface
-      // but could be adapted for other database clients
-      if (this.dbConnection.model && typeof this.dbConnection.model === 'function') {
-        // Mongoose connection
-        const BusinessModel = this.dbConnection.model('Business');
-        return await BusinessModel.findById(businessId).lean();
-      } else if (this.dbConnection.collection) {
-        // MongoDB native driver
-        const collection = this.dbConnection.collection('businesses');
-        return await collection.findOne({ _id: businessId });
-      } else if (this.dbConnection.findOne) {
-        // Direct model access (could be Prisma, etc.)
-        return await this.dbConnection.findOne({ _id: businessId });
-      } else if (typeof this.dbConnection === 'function') {
-        // If dbConnection is a query function
-        return await this.dbConnection('businesses').where('_id', businessId).first();
-      } else {
-        // For this generic implementation, we'll return null to indicate error
-        console.error('Unsupported database connection type');
+      // Handle different database connection types
+      if (!this.dbConnection) {
+        console.error('Database connection/model is required');
         return null;
       }
+
+      // Check if dbConnection is a Mongoose connection object
+      if (this.dbConnection.constructor && this.dbConnection.constructor.name === 'Connection') {
+        // Mongoose connection instance
+        const BusinessModel = this.dbConnection.base.models.Business || 
+                             this.dbConnection.model('Business');
+        return await BusinessModel.findById(businessId).lean();
+      } 
+      // Check if it's a Mongoose connection object with model method
+      else if (this.dbConnection.model && typeof this.dbConnection.model === 'function') {
+        // Mongoose connection object
+        const BusinessModel = this.dbConnection.model('Business');
+        return await BusinessModel.findById(businessId).lean();
+      } 
+      // Check if it's a direct model reference (most likely case when passing Business model)
+      else if (this.dbConnection.findById && this.dbConnection.findOne) {
+        // Direct model reference (like Business from mongoose.model('Business'))
+        return await this.dbConnection.findById(businessId).lean();
+      } 
+      // MongoDB native driver
+      else if (this.dbConnection.collection) {
+        const collection = this.dbConnection.collection('businesses');
+        return await collection.findOne({ _id: businessId });
+      } 
+      // Direct model access (could be Prisma, etc.)
+      else if (this.dbConnection.findOne) {
+        return await this.dbConnection.findOne({ _id: businessId });
+      } 
+      // If dbConnection is a function
+      else if (typeof this.dbConnection === 'function') {
+        try {
+          // Try if it's a model function
+          if (this.dbConnection.findById && this.dbConnection.findOne) {
+            return await this.dbConnection.findById(businessId).lean();
+          }
+        } catch (e) {
+          // If that doesn't work, try it as a query function
+          return await this.dbConnection('businesses').where('_id', businessId).first();
+        }
+      }
+      
+      // If none of the above matched, return null
+      console.error('Unsupported database connection type');
+      return null;
     } catch (error) {
       console.error(`Error fetching business ${businessId}:`, error);
       return null;
