@@ -20,11 +20,15 @@ interface BalanceResult {
 }
 export declare class BalanceUtils {
     private redisClient;
-    private dbConnection?;
-    constructor(redisClient: any, dbConnection?: any);
-    checkAndDebitBalance(businessId: string, action: string): Promise<BalanceResult>;
+    private businessModel;
+    private transactionModel?;
+    constructor(redisClient: any, businessModel: any, transactionModel?: any);
+    checkAndDebitBalance(businessId: string, action: string, idempotencyKey?: string): Promise<BalanceResult>;
+    private checkExistingTransaction;
+    private createTransactionRecord;
     private fetchBusiness;
     setRedisClient(redisClient: any): void;
-    setDbConnection(dbConnection: any): void;
+    setBusinessModel(businessModel: any): void;
+    setTransactionModel(transactionModel: any): void;
 }
 export {};

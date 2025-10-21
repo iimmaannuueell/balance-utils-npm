@@ -42,33 +42,50 @@ type PriceList = Record<string, PriceInfo>;
  */
 export class BalanceUtils {
   private redisClient: any;
-  private dbConnection?: any; // Database connection for fetching business details
+  private businessModel: any; // Business model for fetching business details
+  private transactionModel?: any; // Optional Transaction model for idempotency checks
 
   /**
    * Constructor for BalanceUtils with dependency injection
    * @param redisClient - Redis client instance with .get() and .set() methods
-   * @param dbConnection - Database connection for fetching business details
+   * @param businessModel - Business model for fetching business details
+   * @param transactionModel - Optional Transaction model for idempotency checks
    */
-  constructor(redisClient: any, dbConnection?: any) {
+  constructor(redisClient: any, businessModel: any, transactionModel?: any) {
     this.redisClient = redisClient;
-    this.dbConnection = dbConnection;
+    this.businessModel = businessModel;
+    this.transactionModel = transactionModel;
   }
 
   /**
    * Check balance and debit if sufficient funds are available based on business context - all in one method
    * @param businessId - The business ID to identify the user and fetch country/custom pricing
    * @param action - The service action (e.g., 'identity bvn verification')
+   * @param idempotencyKey - Optional idempotency key to prevent duplicate transactions
    * @returns Result with success status, new balance, and details
    */
   async checkAndDebitBalance(
     businessId: string,
-    action: string
+    action: string,
+    idempotencyKey?: string
   ): Promise<BalanceResult> {
+    // 0. Check for duplicate transaction if idempotency key is provided
+    if (idempotencyKey && this.transactionModel) {
+      const existingTransaction = await this.checkExistingTransaction(idempotencyKey);
+      if (existingTransaction) {
+        return {
+          success: false,
+          error: `Transaction with idempotency key ${idempotencyKey} already exists`,
+          operation: `Duplicate transaction prevented: ${action}`
+        };
+      }
+    }
+
     // 1. Fetch business details from database
-    if (!this.dbConnection) {
+    if (!this.businessModel) {
       return {
         success: false,
-        error: 'Database connection required to fetch business details',
+        error: 'Business model required to fetch business details',
         operation: `Failed to retrieve business ${businessId}`
       };
     }
@@ -133,6 +150,11 @@ export class BalanceUtils {
           await this.redisClient.set(balanceKey, newBalance.toString());
           console.log(`${action} balance debited for business ${businessId}. Amount: ${price}, New balance: ${newBalance}`);
           
+          // Create transaction record if transaction model is provided and idempotency key exists
+          if (this.transactionModel && idempotencyKey) {
+            await this.createTransactionRecord(idempotencyKey, businessId, action, price, currency, 'success');
+          }
+          
           return {
             success: true,
             oldBalance: currentBalance,
@@ -142,6 +164,11 @@ export class BalanceUtils {
             balanceKey
           };
         } else {
+          // Create failed transaction record if transaction model is provided and idempotency key exists
+          if (this.transactionModel && idempotencyKey) {
+            await this.createTransactionRecord(idempotencyKey, businessId, action, price, currency, 'failed');
+          }
+          
           console.log(`Insufficient balance for business ${businessId}. Required: ${price}, Available: ${currentBalance}`);
           return {
             success: false,
@@ -153,6 +180,11 @@ export class BalanceUtils {
           };
         }
       } else {
+        // Create failed transaction record if transaction model is provided and idempotency key exists
+        if (this.transactionModel && idempotencyKey) {
+          await this.createTransactionRecord(idempotencyKey, businessId, action, price, currency, 'failed');
+        }
+        
         console.log(`Balance not found in Redis for business ${businessId} key: ${balanceKey}`);
         return {
           success: false,
@@ -162,6 +194,11 @@ export class BalanceUtils {
         };
       }
     } catch (redisError: any) {
+      // Create failed transaction record if transaction model is provided and idempotency key exists
+      if (this.transactionModel && idempotencyKey) {
+        await this.createTransactionRecord(idempotencyKey, businessId, action, price, currency, 'failed');
+      }
+      
       console.error(`Error getting/setting balance from Redis for business ${businessId}, ${action}:`, redisError);
       
       return {
@@ -175,53 +212,82 @@ export class BalanceUtils {
   }
 
   /**
+   * Check if a transaction with the given idempotency key already exists
+   * @param idempotencyKey - The idempotency key to check
+   * @returns Transaction object if exists, null otherwise
+   */
+  private async checkExistingTransaction(idempotencyKey: string) {
+    if (!this.transactionModel) {
+      return null;
+    }
+    
+    try {
+      // Assuming the transaction model has an 'idempotencyKey' field
+      return await this.transactionModel.findOne({ idempotencyKey }).lean();
+    } catch (error) {
+      console.error(`Error checking existing transaction with idempotency key ${idempotencyKey}:`, error);
+      return null; // If there's an error checking, we'll proceed as if no transaction exists
+    }
+  }
+
+  /**
+   * Create a transaction record
+   * @param idempotencyKey - The idempotency key
+   * @param businessId - The business ID
+   * @param action - The action/service name
+   * @param amount - The amount charged
+   * @param currency - The currency used
+   * @param status - The transaction status
+   */
+  private async createTransactionRecord(idempotencyKey: string, businessId: string, action: string, amount: number, currency: string, status: string) {
+    if (!this.transactionModel) {
+      return;
+    }
+    
+    try {
+      await this.transactionModel.create({
+        idempotencyKey,
+        businessId,
+        action,
+        amount,
+        currency,
+        status,
+        timestamp: new Date()
+      });
+    } catch (error) {
+      console.error(`Error creating transaction record for idempotency key ${idempotencyKey}:`, error);
+    }
+  }
+
+  /**
    * Fetch business details from the database
    * @param businessId - The business ID
    * @returns Business object or null if not found
    */
   private async fetchBusiness(businessId: string): Promise<Business | null> {
     try {
-      if (!this.dbConnection) {
-        console.error('Database connection/model is required');
+      if (!this.businessModel) {
+        console.error('Business model is required');
         return null;
       }
 
-      // Check if dbConnection is a direct model reference (function with findById/findOne)
-      // This check should come first to prioritize model usage
-      if (typeof this.dbConnection === 'function' && 
-          this.dbConnection.findById && 
-          this.dbConnection.findOne) {
+      // Check if businessModel is a direct model reference (function with findById/findOne)
+      if (typeof this.businessModel === 'function' && 
+          this.businessModel.findById && 
+          this.businessModel.findOne) {
         // Direct model reference (like Business from mongoose.model('Business'))
-        return await this.dbConnection.findById(businessId).lean();
+        return await this.businessModel.findById(businessId).lean();
       }
       // Check if it's an object that has findById and findOne (like a model instance)
-      else if (this.dbConnection.findById && this.dbConnection.findOne) {
+      else if (this.businessModel.findById && this.businessModel.findOne) {
         // Direct model instance
-        return await this.dbConnection.findById(businessId).lean();
+        return await this.businessModel.findById(businessId).lean();
       }
-      // Check if it's a Mongoose connection object with model method
-      else if (this.dbConnection.model && typeof this.dbConnection.model === 'function') {
-        // Mongoose connection object - get the Business model from it
-        const BusinessModel = this.dbConnection.model('Business');
-        return await BusinessModel.findById(businessId).lean();
-      } 
-      // MongoDB native driver
-      else if (this.dbConnection.collection) {
-        const collection = this.dbConnection.collection('businesses');
-        return await collection.findOne({ _id: businessId });
-      } 
-      // If dbConnection is a generic function
-      else if (typeof this.dbConnection === 'function') {
-        return await this.dbConnection('businesses').where('_id', businessId).first();
-      }
-      // Generic findOne method (for Prisma, etc.)
-      else if (this.dbConnection.findOne) {
-        return await this.dbConnection.findOne({ _id: businessId });
-      }
-      
       // If none of the above matched, return null
-      console.error('Unsupported database connection type');
-      return null;
+      else {
+        console.error('Business model is not in expected format');
+        return null;
+      }
     } catch (error) {
       console.error(`Error fetching business ${businessId}:`, error);
       return null;
@@ -237,10 +303,18 @@ export class BalanceUtils {
   }
 
   /**
-   * Update the database connection
-   * @param dbConnection - New database connection
+   * Update the business model
+   * @param businessModel - New business model
    */
-  setDbConnection(dbConnection: any) {
-    this.dbConnection = dbConnection;
+  setBusinessModel(businessModel: any) {
+    this.businessModel = businessModel;
+  }
+
+  /**
+   * Update the transaction model
+   * @param transactionModel - New transaction model
+   */
+  setTransactionModel(transactionModel: any) {
+    this.transactionModel = transactionModel;
   }
 }
